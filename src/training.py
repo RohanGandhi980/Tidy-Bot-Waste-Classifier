@@ -1,75 +1,57 @@
 # training.py
-import os, json
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.applications import EfficientNetB2
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
-from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
-from tensorflow.keras.optimizers import Adam
-from preprocessing import create_datagen
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, models, optimizers
+import json
+from pathlib import Path
 
-IMG_SIZE = (224, 224)
+DATA_DIR = Path("data")
+TRAIN_DIR, VAL_DIR = DATA_DIR / "train", DATA_DIR / "val"
+
 BATCH_SIZE = 32
+IMG_SIZE = (224, 224)
 EPOCHS = 20
-MODEL_DIR = "models"
-MODEL_PATH = os.path.join(MODEL_DIR, "best_model.h5")
-CLASS_INDICES_PATH = os.path.join(MODEL_DIR, "class_indices.json")
 
+# Data Generators
+train_datagen = ImageDataGenerator(rescale=1./255, rotation_range=15, width_shift_range=0.1,
+                                   height_shift_range=0.1, shear_range=0.1, zoom_range=0.1,
+                                   horizontal_flip=True, fill_mode='nearest')
 
-train_gen = datagen.flow_from_directory(
-    "data/train",
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode="binary",   # only 2 classes
-    shuffle=True
-)
+val_datagen = ImageDataGenerator(rescale=1./255)
 
-val_gen = datagen.flow_from_directory(
-    "data/val",
-    target_size=IMG_SIZE,
-    batch_size=BATCH_SIZE,
-    class_mode="binary",
-    shuffle=False
-)
+train_gen = train_datagen.flow_from_directory(TRAIN_DIR, target_size=IMG_SIZE, batch_size=BATCH_SIZE, class_mode="binary")
+val_gen = val_datagen.flow_from_directory(VAL_DIR, target_size=IMG_SIZE, batch_size=BATCH_SIZE, class_mode="binary")
 
-base_model = EfficientNetB2(weights="imagenet", include_top=False, input_shape=(224,224,3))
+# Model
+model = models.Sequential([
+    layers.Conv2D(32, (3,3), activation="relu", input_shape=(224,224,3)),
+    layers.MaxPooling2D((2,2)),
+    layers.Conv2D(64, (3,3), activation="relu"),
+    layers.MaxPooling2D((2,2)),
+    layers.Conv2D(128, (3,3), activation="relu"),
+    layers.MaxPooling2D((2,2)),
+    layers.Flatten(),
+    layers.Dense(128, activation="relu"),
+    layers.Dropout(0.5),
+    layers.Dense(1, activation="sigmoid")
+])
 
-for layer in base_model.layers[:150]:
-    layer.trainable = False
-for layer in base_model.layers[150:]:
-    layer.trainable = True
+model.compile(optimizer=optimizers.Adam(1e-4),
+              loss="binary_crossentropy",
+              metrics=["accuracy"])
 
-x = base_model.output
-x = GlobalAveragePooling2D()(x)
-x = Dropout(0.4)(x)
-preds = Dense(1, activation="sigmoid")(x)   
+# Callbacks
+callbacks = [
+    tf.keras.callbacks.ModelCheckpoint("models/best_model.h5", save_best_only=True),
+    tf.keras.callbacks.ReduceLROnPlateau(patience=2)
+]
 
-model = Model(inputs=base_model.input, outputs=preds)
+# Train
+history = model.fit(train_gen, validation_data=val_gen, epochs=EPOCHS, callbacks=callbacks)
 
-model.compile(
-    optimizer=Adam(learning_rate=1e-4),
-    loss="binary_crossentropy",
-    metrics=["accuracy"]
-)
+# Save class indices
+class_indices = train_gen.class_indices
+with open("models/class_indices.json", "w") as f:
+    json.dump(class_indices, f)
 
-
-if not os.path.exists(MODEL_DIR):
-    os.makedirs(MODEL_DIR)
-
-checkpoint = ModelCheckpoint(MODEL_PATH, monitor="val_accuracy", save_best_only=True, mode="max")
-reduce_lr = ReduceLROnPlateau(monitor="val_loss", factor=0.3, patience=3, verbose=1)
-
-history = model.fit(
-    train_gen,
-    validation_data=val_gen,
-    epochs=EPOCHS,
-    callbacks=[checkpoint, reduce_lr]
-)
-
-print(f"✅ Training complete. Best model saved at {MODEL_PATH}")
-
-#saving the model
-with open(CLASS_INDICES_PATH, "w") as f:
-    json.dump(train_gen.class_indices, f)
-print(f"✅ Class indices saved at {CLASS_INDICES_PATH}")
+print("✅ Training complete. Best model saved at models/best_model.h5")
